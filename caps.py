@@ -13,13 +13,16 @@ sns.set_style("whitegrid")
 plt.rcParams['figure.dpi'] = 100
 
 
-# =============================
-# CLASS: YouTube Sentiment Analyzer
-# =============================
+# ====================================================
+#   SENTIMENT ANALYZER CLASS
+# ====================================================
 class YouTubeSentimentAnalyzer:
     def __init__(self, api_key):
         self.api_key = api_key
-        self.youtube = build('youtube', 'v3', developerKey=api_key)
+        try:
+            self.youtube = build('youtube', 'v3', developerKey=api_key)
+        except Exception as e:
+            st.error(f"❌ Failed to initialize YouTube API: {e}")
         self.vader = SentimentIntensityAnalyzer()
         self.comments_df = None
         self.video_info = None
@@ -34,14 +37,23 @@ class YouTubeSentimentAnalyzer:
             match = re.search(pattern, url)
             if match:
                 return match.group(1)
-        return url
+        return url  # assume it's a pure video ID
 
     def get_video_info(self, video_id):
-        request = self.youtube.videos().list(
-            part='snippet,statistics',
-            id=video_id
-        )
-        response = request.execute()
+        try:
+            request = self.youtube.videos().list(
+                part='snippet,statistics',
+                id=video_id
+            )
+            response = request.execute()
+        except Exception as e:
+            st.error(f"❌ YouTube API Error (video info): {e}")
+            return None
+
+        if not response.get("items"):
+            st.error("❌ No video found with this ID.")
+            return None
+
         video = response['items'][0]
 
         self.video_info = {
@@ -59,16 +71,21 @@ class YouTubeSentimentAnalyzer:
         next_page_token = None
 
         while len(comments) < max_comments:
-            request = self.youtube.commentThreads().list(
-                part='snippet',
-                videoId=video_id,
-                maxResults=min(100, max_comments - len(comments)),
-                pageToken=next_page_token,
-                textFormat='plainText'
-            )
-            response = request.execute()
+            try:
+                request = self.youtube.commentThreads().list(
+                    part='snippet',
+                    videoId=video_id,
+                    maxResults=min(100, max_comments - len(comments)),
+                    pageToken=next_page_token,
+                    textFormat='plainText'
+                )
+                response = request.execute()
 
-            for item in response['items']:
+            except Exception as e:
+                st.error(f"❌ YouTube API Error (comments): {e}")
+                return []
+
+            for item in response.get('items', []):
                 c = item['snippet']['topLevelComment']['snippet']
                 comments.append({
                     'author': c['authorDisplayName'],
@@ -115,57 +132,83 @@ class YouTubeSentimentAnalyzer:
         return df
 
 
-# =============================
-# STREAMLIT APP
-# =============================
+# ====================================================
+#   STREAMLIT APP
+# ====================================================
 def main():
     st.title("🎬 YouTube Comment Sentiment Analyzer")
-    st.write("Enter a YouTube video link to analyze viewer sentiment.")
+    st.write("Analyze sentiment, generate visual insights for any YouTube video.")
 
-    # Get API Key from secrets
-    api_key = st.secrets["YOUTUBE_API_KEY"]
+    # Load Secret API Key
+    try:
+        api_key = st.secrets["YOUTUBE_API_KEY"]
+    except:
+        st.error("❌ Missing API key in Streamlit Secrets.\nGo to → Settings → Secrets")
+        return
 
     analyzer = YouTubeSentimentAnalyzer(api_key)
-
     url = st.text_input("Enter YouTube Video URL")
 
     if st.button("Analyze"):
         if not url:
-            st.error("Please enter a video URL")
+            st.error("❌ Please enter a valid YouTube URL.")
             return
 
+        # Extract Video ID
         video_id = analyzer.extract_video_id(url)
 
-        with st.spinner("Fetching video details..."):
+        # Fetch Video Info
+        with st.spinner("📌 Fetching video details..."):
             video_info = analyzer.get_video_info(video_id)
-            st.subheader("📌 Video Information")
-            st.json(video_info)
 
-        with st.spinner("Fetching comments..."):
+        if not video_info:
+            return
+
+        st.subheader("🎥 Video Information")
+        st.json(video_info)
+
+        # Fetch Comments
+        with st.spinner("💬 Fetching comments..."):
             comments = analyzer.get_comments(video_id)
 
-        st.success(f"{len(comments)} comments fetched.")
+        if len(comments) == 0:
+            st.error("❌ No comments found or API blocked the request.")
+            return
 
-        with st.spinner("Analyzing sentiment..."):
+        st.success(f"✔ Retrieved {len(comments)} comments.")
+
+        # Sentiment Analysis
+        with st.spinner("🧠 Running sentiment analysis..."):
             df = analyzer.analyze(comments)
 
-        st.subheader("🧠 Sentiment Analysis Results")
+        st.subheader("📊 Sentiment Analysis Results")
         st.dataframe(df)
 
+        # ============================
         # Word Cloud
-        st.subheader("☁️ Word Cloud")
+        # ============================
+        st.subheader("☁️ Word Cloud of Comments")
         all_text = " ".join(df['comment'])
         wc = WordCloud(width=800, height=400).generate(all_text)
+
         fig, ax = plt.subplots()
         ax.imshow(wc, interpolation="bilinear")
         ax.axis("off")
         st.pyplot(fig)
 
-        # Sentiment Plot
-        st.subheader("📊 Sentiment Distribution")
+        # ============================
+        # Sentiment Histogram
+        # ============================
+        st.subheader("📈 Sentiment Distribution (Compound Score)")
         fig2, ax2 = plt.subplots()
         sns.histplot(df['vader_compound'], bins=20, ax=ax2)
         st.pyplot(fig2)
+
+        # ============================
+        # Download Results
+        # ============================
+        csv = df.to_csv(index=False).encode("utf-8")
+        st.download_button("⬇ Download Sentiment Data (CSV)", csv, "sentiment_results.csv", "text/csv")
 
 
 if __name__ == "__main__":
