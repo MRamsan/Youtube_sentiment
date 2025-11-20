@@ -1,3 +1,9 @@
-streamlit==1.39.0
-openai==1.45.0
-python-dotenv==1.0.1
+google-api-python-client
+textblob
+vaderSentiment
+wordcloud
+pandas
+numpy
+matplotlib
+seaborn
+
